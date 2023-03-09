@@ -1,0 +1,41 @@
+# Ignore obj and bin directories
+obj/
+bin/
+
+# Ignore user-specific files
+*.user
+*.suo
+*.userprefs
+*.vspscc
+*.vssscc
+*.vs
+
+# Ignore build output
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Bb]uild/
+
+# Ignore NuGet Packages
+*.nuget.props
+*.nuget.targets
+Packages/
+
+# Visual Studio cache files
+# files ending in .cache can be removed
+*.cache
+
+# Other Visual Studio auto-generated files
+*.log
+*.vs
+
+# Files built by Visual Studio or other development tools
+*.pdb
+*.dll
+*.exe
+*.msi
+
+# Build results that shouldn't be committed
+[Bb]in/
+[Oo]bj/
