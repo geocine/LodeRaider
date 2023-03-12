@@ -233,5 +233,35 @@ namespace LodeRaider
             }
             return array;
         }
+
+        internal static void WriteAudioDataToWav(byte[] audioData, string fileName, int numChannels = 1, int sampleRate = 22050)
+        {
+            // Set the sample rate, number of channels, and bits per sample
+            int numBitsPerSample = 16; // Always use 16-bit for WAV files
+            int numBytesPerSample = numChannels * numBitsPerSample / 8; // 2 bytes per sample
+            int numBytesPerSecond = sampleRate * numBytesPerSample; // 44100 bytes per second
+
+            using (FileStream fileStream = new FileStream($"{fileName}.wav", FileMode.Create))
+            using (BinaryWriter binaryWriter = new BinaryWriter(fileStream))
+            {
+                // Write the wave file headers
+                binaryWriter.Write("RIFF".ToCharArray());
+                binaryWriter.Write((int)(36 + audioData.Length)); // file size, 36 bytes in the header
+                binaryWriter.Write("WAVE".ToCharArray());
+                binaryWriter.Write("fmt ".ToCharArray());
+                binaryWriter.Write(16); // 16 bytes in the fmt chunk
+                binaryWriter.Write((short)1); // PCM audio format
+                binaryWriter.Write((short)numChannels);
+                binaryWriter.Write(sampleRate); // sample rate
+                binaryWriter.Write(numBytesPerSecond); // bytes per second
+                binaryWriter.Write((short)numBytesPerSample);  // block align
+                binaryWriter.Write((short)numBitsPerSample); // 16 bits per sample
+                binaryWriter.Write("data".ToCharArray());
+                binaryWriter.Write(audioData.Length); // data size
+                                                      // Write the audio data
+                binaryWriter.Write(audioData);
+            }
+        }
+
     }
 }

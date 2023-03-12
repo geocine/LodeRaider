@@ -40,16 +40,16 @@ foreach (string text in Directory.EnumerateFiles(dataDir, "*.PRD"))
             {
                 // print name | type | offset | length | id
                 Console.WriteLine("{0,-20} | {1,-10} | {2,-10} | {3,-10} | {4,-10}", asset, asset.assetType, asset.offset, asset.length, asset.id);
-                // if (asset.assetType == "SND" && asset.name == "sierra")
-                // {
-                //     ExtractSound(asset);
-                //     Console.WriteLine("Extracted sound: " + asset.name);
-                // }
-                //if (asset.assetType == "PCM" && asset.name == "CREDITS")
-                //{
-                //    ExtractPCM(asset);
-                //    Console.WriteLine("Extracted pcm: " + asset.name);
-                //}
+                if (asset.assetType == "SND" && asset.name == "sierra")
+                {
+                    ExtractSound(asset);
+                    Console.WriteLine("Extracted sound: " + asset.name);
+                }
+                if (asset.assetType == "PCM" && asset.name == "CREDITS")
+                {
+                    ExtractPCM(asset);
+                    Console.WriteLine("Extracted pcm: " + asset.name);
+                }
             }
         }
     }
@@ -84,18 +84,18 @@ void ExtractPCM(Asset asset)
         var header = Encoding.ASCII.GetString(binaryReader.ReadBytes(4));
         if (header != "RIFF")
         {
-            Console.WriteLine($"Not a valid wave file: {asset.name}");
+            Console.WriteLine($"Not a valid MSADPCM file: {asset.name}");
             return;
         }
         binaryReader.ReadInt32();
         var format = Encoding.ASCII.GetString(binaryReader.ReadBytes(4));
         if (format != "WAVE")
         {
-            Console.WriteLine($"Not a valid wave file: {asset.name}");
+            Console.WriteLine($"Not a valid MSADPCM file: {asset.name}");
             return;
         }
 
-        WaveData waveData = default(WaveData);
+        WaveHeader waveHeader = default(WaveHeader);
         while (!(binaryReader == null || binaryReader.BaseStream.Position == (asset.offset + asset.length)))
         {
             string section = Encoding.ASCII.GetString(binaryReader.ReadBytes(4)); // fmt desc header
@@ -106,74 +106,41 @@ void ExtractPCM(Asset asset)
                 if (section == "data")
                 {
 
-                    int sampleRate = (int)waveData.Header.SampleRate;
-                    int numChannels = waveData.Header.NumChannels; // Always use mono for WAV files
-                    int numBitsPerSample = 16; // Always use 16-bit for WAV files
-                    int numBytesPerSample = numChannels * numBitsPerSample / 8; // 2 bytes per sample
-                    int numBytesPerSecond = sampleRate * numBytesPerSample;
+                    byte[] soundData = binaryReader.ReadBytes(num);
+                    byte[] pcmData = Audio.ConvertMsAdpcmToPcm(soundData, 0, num, (short)waveHeader.NumChannels, (short)waveHeader.BlockAlign);
 
-                    Console.WriteLine("write data");
+                    int sampleRate = (int)waveHeader.SampleRate;
+                    int numChannels = waveHeader.NumChannels;
+
                     var fileName = NormalizeFilename(asset);
-                    using (FileStream fileStream = new FileStream($"{fileName}.wav", FileMode.Create))
-                    using (BinaryWriter binaryWriter = new BinaryWriter(fileStream))
-                    {
-
-                        // Write the wave file headers
-                        binaryWriter.Write("RIFF".ToCharArray());
-                        binaryWriter.Write((int)(36 + num)); // file size , 36 bytes in the header
-                        binaryWriter.Write("WAVE".ToCharArray());
-                        binaryWriter.Write("fmt ".ToCharArray());
-                        binaryWriter.Write(16); // 16 bytes in the fmt chunk
-                        binaryWriter.Write((short)1); // PCM audio format
-                        binaryWriter.Write((short)numChannels);
-                        binaryWriter.Write(sampleRate); // sample rate
-                        binaryWriter.Write(numBytesPerSecond); // bytes per second
-                        binaryWriter.Write((short)numBytesPerSample);  // block align
-                        binaryWriter.Write((short)numBitsPerSample); // 16 bits per sample
-                        binaryWriter.Write("data".ToCharArray());
-                        binaryWriter.Write(num); // data size
-
-                        byte[] soundData = binaryReader.ReadBytes(num);
-
-                        byte[] pcmData = Audio.ConvertMsAdpcmToPcm(soundData, 0, num, (short)waveData.Header.NumChannels, (short)waveData.Header.BlockAlign);
-
-                        // Write the audio data
-                        binaryWriter.Write(pcmData);
-
-
-                    }
+                    Audio.WriteAudioDataToWav(pcmData, fileName, numChannels, sampleRate);
                     return;
                 }
                 binaryReader.BaseStream.Seek((long)num, SeekOrigin.Current);
             }
             else
             {
-                waveData.Header = new WaveHeader
+
+                waveHeader.FormatType = binaryReader.ReadUInt16();
+                waveHeader.NumChannels = binaryReader.ReadUInt16();
+                waveHeader.SampleRate = binaryReader.ReadUInt32();
+                waveHeader.ByteRate = binaryReader.ReadUInt32();
+                waveHeader.BlockAlign = binaryReader.ReadUInt16();
+                waveHeader.BitsPerSample = binaryReader.ReadUInt16();
+                waveHeader.CbSize = binaryReader.ReadUInt16();
+                waveHeader.DataSize = binaryReader.ReadUInt16();
+                // Read Num Channels
+                var numSamples = binaryReader.ReadUInt16();
+                // Read all 7 samples, 7 * 4bytes (32 bits) , 2 bytes per channel
+                binaryReader.ReadBytes(numSamples * 4);
+                if (waveHeader.FormatType != 2 || waveHeader.BitsPerSample != 4)
                 {
-                    FormatType = binaryReader.ReadUInt16(),
-                    NumChannels = binaryReader.ReadUInt16(),
-                    SampleRate = binaryReader.ReadUInt32(),
-                    ByteRate = binaryReader.ReadUInt32(),
-                    BlockAlign = binaryReader.ReadUInt16(),
-                    BitsPerSample = binaryReader.ReadUInt16(),
-                    CbSize = binaryReader.ReadUInt16()
-                };
-                waveData.DataSize = binaryReader.ReadUInt16();
-                waveData.NumSamples = binaryReader.ReadUInt16();
-                waveData.Samples = new WaveSample[7]; // 7 channels max
-                for (int i = 0; i < (int)waveData.NumSamples; i++)
-                {
-                    waveData.Samples[i].LeftChannel = binaryReader.ReadInt16();
-                    waveData.Samples[i].RightChannel = binaryReader.ReadInt16();
-                }
-                if (waveData.Header.FormatType != 2 || waveData.Header.BitsPerSample != 4)
-                {
-                    // Incorrect file
+                    Console.WriteLine($"Not a valid MSADPCM file: {asset.name}");
                     return;
                 }
             }
         }
-        // Incorrect file
+        Console.WriteLine($"Not a valid MSADPCM file: {asset.name}");
         return;
     }
 }
@@ -200,39 +167,12 @@ void ExtractSound(Asset asset)
         byte[] soundData = binaryReader.ReadBytes((int)num);
         byte[] waveData = Audio.ConvertPcm8bitTo16bit(soundData);
 
-        // Set the sample rate, number of channels, and bits per sample
-        int sampleRate = 22050; // Sound files are always 22050 Hz
-        int numChannels = 1; // Always use mono for WAV files
-        int numBitsPerSample = 16; // Always use 16-bit for WAV files
-        int numBytesPerSample = numChannels * numBitsPerSample / 8; // 2 bytes per sample
-        int numBytesPerSecond = sampleRate * numBytesPerSample; // 44100 bytes per second
-
         // Create a new file stream and binary writer
         var fileName = NormalizeFilename(asset);
-        using (FileStream fileStream = new FileStream($"{fileName}.wav", FileMode.Create))
-        using (BinaryWriter binaryWriter = new BinaryWriter(fileStream))
-        {
-            // Write the wave file headers
-            binaryWriter.Write("RIFF".ToCharArray());
-            binaryWriter.Write((int)(36 + waveData.Length)); // file size , 36 bytes in the header
-            binaryWriter.Write("WAVE".ToCharArray());
-            binaryWriter.Write("fmt ".ToCharArray());
-            binaryWriter.Write(16); // 16 bytes in the fmt chunk
-            binaryWriter.Write((short)1); // PCM audio format
-            binaryWriter.Write((short)numChannels);
-            binaryWriter.Write(sampleRate); // sample rate
-            binaryWriter.Write(numBytesPerSecond); // bytes per second
-            binaryWriter.Write((short)numBytesPerSample);  // block align
-            binaryWriter.Write((short)numBitsPerSample); // 16 bits per sample
-            binaryWriter.Write("data".ToCharArray());
-            binaryWriter.Write(waveData.Length); // data size
-
-            // Write the audio data
-            binaryWriter.Write(waveData);
-
-        }
+        Audio.WriteAudioDataToWav(waveData, fileName, 1, 22050);
     }
 }
+
 
 string NormalizeFilename(Asset asset)
 {
@@ -289,18 +229,5 @@ struct WaveHeader
     public ushort BlockAlign;      // block align
     public ushort BitsPerSample;   // bits per sample
     public ushort CbSize;         // unknown field with value 32 (0x20) which is a space character
-}
-
-internal struct WaveData
-{
-    public WaveHeader Header;      // wave file header
-    public ushort DataSize;        // size of remaining data in bytes
-    public ushort NumSamples;      // number of audio samples
-    public WaveSample[] Samples;   // array of audio samples
-}
-
-internal struct WaveSample
-{
-    public short LeftChannel;      // left channel audio sample
-    public short RightChannel;     // right channel audio sample (if stereo)
+    public ushort DataSize;        // size of data chunk
 }
