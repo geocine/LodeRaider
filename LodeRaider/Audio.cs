@@ -279,32 +279,27 @@ namespace LodeRaider
             return array;
         }
 
-        internal static void WriteAudioDataToWav(byte[] audioData, string fileName, int numChannels = 1, int sampleRate = 22050)
+        public static void WriteAudioDataToWav(byte[] audioData, string outputPath, int numChannels, int sampleRate)
         {
-            // Set the sample rate, number of channels, and bits per sample
-            int numBitsPerSample = 16; // Always use 16-bit for WAV files
-            int numBytesPerSample = numChannels * numBitsPerSample / 8; // 2 bytes per sample
-            int numBytesPerSecond = sampleRate * numBytesPerSample; // 44100 bytes per second
-
-            using (FileStream fileStream = new FileStream($"{fileName}.wav", FileMode.Create))
-            using (BinaryWriter binaryWriter = new BinaryWriter(fileStream))
+            // Use outputPath directly without adding .wav since it's already included in the path
+            using (var fileStream = new FileStream(outputPath, FileMode.Create))
+            using (var writer = new BinaryWriter(fileStream))
             {
-                // Write the wave file headers
-                binaryWriter.Write("RIFF".ToCharArray());
-                binaryWriter.Write((int)(36 + audioData.Length)); // file size, 36 bytes in the header
-                binaryWriter.Write("WAVE".ToCharArray());
-                binaryWriter.Write("fmt ".ToCharArray());
-                binaryWriter.Write(16); // 16 bytes in the fmt chunk
-                binaryWriter.Write((short)1); // PCM audio format
-                binaryWriter.Write((short)numChannels);
-                binaryWriter.Write(sampleRate); // sample rate
-                binaryWriter.Write(numBytesPerSecond); // bytes per second
-                binaryWriter.Write((short)numBytesPerSample);  // block align
-                binaryWriter.Write((short)numBitsPerSample); // 16 bits per sample
-                binaryWriter.Write("data".ToCharArray());
-                binaryWriter.Write(audioData.Length); // data size
-                                                      // Write the audio data
-                binaryWriter.Write(audioData);
+                // Write WAV header
+                writer.Write(Encoding.ASCII.GetBytes("RIFF"));
+                writer.Write(audioData.Length + 36); // File size
+                writer.Write(Encoding.ASCII.GetBytes("WAVE"));
+                writer.Write(Encoding.ASCII.GetBytes("fmt "));
+                writer.Write(16); // Chunk size
+                writer.Write((short)1); // Audio format (PCM)
+                writer.Write((short)numChannels); // Channels
+                writer.Write(sampleRate); // Sample rate
+                writer.Write(sampleRate * numChannels * 2); // Byte rate
+                writer.Write((short)(numChannels * 2)); // Block align
+                writer.Write((short)16); // Bits per sample
+                writer.Write(Encoding.ASCII.GetBytes("data"));
+                writer.Write(audioData.Length);
+                writer.Write(audioData);
             }
         }
 
