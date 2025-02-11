@@ -1,9 +1,11 @@
 ﻿using System;
+using System.Drawing;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using LodeRaider;
 
+// Directory containing game assets
 
 string dataDir = Path.Combine(Environment.CurrentDirectory, "DATA");
 
@@ -16,6 +18,11 @@ foreach (string text in Directory.EnumerateFiles(dataDir, "*.PRD"))
         string prsFilePath = ToUnicode(binaryReader, 256); // 02PRD path to prs file
         string prsFile = Path.GetFileName(prsFilePath).ToUpperInvariant();
         string prsPath = Path.Combine(dataDir, prsFile);
+
+        // Add debug output
+        Console.WriteLine($"Looking for PRS file: {prsPath}");
+        Console.WriteLine($"PRS file exists: {File.Exists(prsPath)}");
+
         if (string.IsNullOrEmpty(prsFile) || (!string.IsNullOrEmpty(prsFile) && !File.Exists(prsPath)))
         {
             Console.WriteLine("Invalid resource: " + text);
@@ -39,38 +46,61 @@ foreach (string text in Directory.EnumerateFiles(dataDir, "*.PRD"))
             if (asset.length != 0 && asset.offset != 0)
             {
                 // print name | type | offset | length | id
-                Console.WriteLine("{0,-20} | {1,-10} | {2,-10} | {3,-10} | {4,-10}", asset, asset.assetType, asset.offset, asset.length, asset.id);
-                if (asset.assetType == "SND" && asset.name == "sierra")
+                Console.WriteLine("{0,-20} | {1,-10} | {2,-10} | {3,-10} | {4,-10}", 
+                    asset, asset.assetType, asset.offset, asset.length, asset.id);
+                
+                if (asset.assetType == "SND") //&& asset.name == "sierra")
                 {
                     ExtractSound(asset);
                     Console.WriteLine("Extracted sound: " + asset.name);
                 }
-                if (asset.assetType == "PCM" && asset.name == "CREDITS")
+                if (asset.assetType == "PCM") //&& asset.name == "CREDITS")
                 {
                     ExtractPCM(asset);
                     Console.WriteLine("Extracted pcm: " + asset.name);
+                }
+                if (asset.assetType == "PAK") //&& asset.name == "Rope Trap 3")
+                {
+                    var pakData = LoadPak(asset);
+                    Console.WriteLine($"{asset.name,-20} | {asset.assetType,-10} | {asset.offset,-10} | {asset.length,-10} | {asset.id,-10}");
                 }
             }
         }
     }
 }
 
-// seek inside the PRS file
+// Convert bytes to Unicode string, keeping original implementation
+string ToUnicode(BinaryReader binaryReader, int length)
+{
+    string hexString = BitConverter.ToString(binaryReader.ReadBytes(length), 0, length);
+    if (!string.IsNullOrEmpty(hexString))
+    {
+        StringBuilder sb = new StringBuilder();
+        foreach (string substr in hexString.Split('-'))
+{
+            // Convert the hex string to an integer
+            int value = Convert.ToInt32(substr, 16);
+            if (value != 0)
+    {
+                // Convert the integer to its Unicode equivalent character and append it to the StringBuilder
+                sb.Append(char.ConvertFromUtf32(value));
+            }
+        }
+        return sb.ToString();
+    }
+    return hexString;
+    }
+
+// Helper to seek within PRS file
 void Seek(BinaryReader binaryReader, Asset asset)
 {
-    if (binaryReader == null)
-    {
-        return;
-    }
+    if (binaryReader == null) return;
     Stream baseStream = binaryReader.BaseStream;
-    if (baseStream == null)
-    {
-        return;
-    }
-    // seek to the offset
-    baseStream.Seek((long)asset.offset, SeekOrigin.Begin);
+    if (baseStream == null) return;
+    baseStream.Seek(asset.offset, SeekOrigin.Begin);
 }
 
+// Original working ExtractPCM implementation
 void ExtractPCM(Asset asset)
 {
     // Open the binary stream
@@ -145,7 +175,7 @@ void ExtractPCM(Asset asset)
     }
 }
 
-// SND
+// Original working ExtractSound implementation
 void ExtractSound(Asset asset)
 {
     // Open the binary stream
@@ -153,6 +183,11 @@ void ExtractSound(Asset asset)
     {
         // Create a binary reader to read the sound data
         var binaryReader = new BinaryReader(binaryStream);
+        Seek(binaryReader, asset);
+
+        // Add debug output
+        Console.WriteLine($"Processing sound: {asset.name}");
+        Console.WriteLine($"Asset length: {asset.length}");
 
         // Seek to the data as specified by the asset
         Seek(binaryReader, asset);
@@ -164,15 +199,52 @@ void ExtractSound(Asset asset)
 
         // Read the sound data and convert it to 16-bit PCM
         uint num = binaryReader.ReadUInt32() + 1U;
+        Console.WriteLine($"Sound data length: {num}");
+
         byte[] soundData = binaryReader.ReadBytes((int)num);
+        Console.WriteLine($"Read {soundData.Length} bytes");
+
+        try 
+        {
         byte[] waveData = Audio.ConvertPcm8bitTo16bit(soundData);
+            Console.WriteLine($"Converted to {waveData.Length} bytes PCM");
 
         // Create a new file stream and binary writer
         var fileName = NormalizeFilename(asset);
         Audio.WriteAudioDataToWav(waveData, fileName, 1, 22050);
     }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error processing {asset.name}: {ex.Message}");
+            Console.WriteLine($"Stack trace: {ex.StackTrace}");
+            throw;
+        }
+    }
 }
 
+// Placeholder for PAK loading implementation
+object LoadPak(Asset asset)
+{
+    using (var binaryReader = new BinaryReader(File.Open(asset.prsPath, FileMode.Open)))
+    {
+        binaryReader.BaseStream.Seek(asset.offset, SeekOrigin.Begin);
+        
+        // TODO: Implement PAK loading
+        // Based on NOTES.md:
+        // 1. Get IMG with same name as PAK
+        // 2. Seek PAK
+        // 3. LoadPak return struct
+        // 4. Seek PAK (resets)
+        // 5. Return texture 2d
+        // 6. Seek IMG
+        // 7. Return rectangle array
+        // 8. Get MUV with same name as PAK
+        // 9. Seek MUV (Movie)
+        // 10. Return Struct27
+        
+        return null;
+    }
+}
 
 string NormalizeFilename(Asset asset)
 {
@@ -184,40 +256,19 @@ string NormalizeFilename(Asset asset)
     return name;
 }
 
-string ToUnicode(BinaryReader binaryReader, int length)
-{
-    string hexString = BitConverter.ToString(binaryReader.ReadBytes(length), 0, length);
-    if (!string.IsNullOrEmpty(hexString))
-    {
-        StringBuilder sb = new StringBuilder();
-        foreach (string substr in hexString.Split('-'))
-        {
-            // Convert the hex string to an integer
-            int value = Convert.ToInt32(substr, 16);
-            if (value != 0)
-            {
-                // Convert the integer to its Unicode equivalent character and append it to the StringBuilder
-                sb.Append(char.ConvertFromUtf32(value));
-            }
-        }
-        return sb.ToString();
-    }
-    return hexString;
-}
-
-
 struct Asset
 {
+    public string assetType;  // Type of asset (SND, PCM, PAK, etc)
+    public short id;          // Asset ID
+    public string name;       // Asset name
+    public int length;        // Asset data length
+    public int offset;        // Offset in PRS file
+    public string prsPath;    // Path to PRS file containing asset data
+
     public override string ToString()
     {
         return string.IsNullOrEmpty(name.Trim()) ? "Resource" : name;
     }
-    public string assetType;
-    public short id;
-    public string name;
-    public int length;
-    public int offset;
-    public string prsPath;
 }
 
 struct WaveHeader
@@ -228,6 +279,6 @@ struct WaveHeader
     public uint ByteRate;          // bytes per second
     public ushort BlockAlign;      // block align
     public ushort BitsPerSample;   // bits per sample
-    public ushort CbSize;         // unknown field with value 32 (0x20) which is a space character
-    public ushort DataSize;        // size of data chunk
+    public ushort CbSize;          // Extra format bytes
+    public ushort DataSize;        // Size of data chunk
 }

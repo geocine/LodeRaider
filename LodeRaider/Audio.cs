@@ -57,151 +57,196 @@ namespace LodeRaider
         // Convert buffer containing MS-ADPCM wav data to a 16-bit signed PCM buffer
         internal static byte[] ConvertMsAdpcmToPcm(byte[] buffer, int offset, int count, int channels, int blockAlignment)
         {
+            Console.WriteLine($"Converting MSADPCM: offset={offset}, count={count}, channels={channels}, blockAlignment={blockAlignment}");
+            
             MsAdpcmState channel0 = new MsAdpcmState();
             MsAdpcmState channel1 = new MsAdpcmState();
-            int blockPredictor;
 
-            int sampleCountFullBlock = ((blockAlignment / channels) - 7) * 2 + 2;
-            int sampleCountLastBlock = 0;
-            if ((count % blockAlignment) > 0)
-                sampleCountLastBlock = (((count % blockAlignment) / channels) - 7) * 2 + 2;
-            int sampleCount = ((count / blockAlignment) * sampleCountFullBlock) + sampleCountLastBlock;
-            var samples = new byte[sampleCount * sizeof(short) * channels];
-            int sampleOffset = 0;
-
-            bool stereo = channels == 2;
-
-            while (count > 0)
+            try 
             {
-                int blockSize = blockAlignment;
-                if (count < blockSize)
-                    blockSize = count;
-                count -= blockAlignment;
-
-                int totalSamples = ((blockSize / channels) - 7) * 2 + 2;
-                if (totalSamples < 2)
-                    break;
-
-                int offsetStart = offset;
-                blockPredictor = buffer[offset];
-                ++offset;
-                if (blockPredictor > 6)
-                    blockPredictor = 6;
-                channel0.coeff1 = adaptationCoeff1[blockPredictor];
-                channel0.coeff2 = adaptationCoeff2[blockPredictor];
-                if (stereo)
+                // Calculate samples per block more safely using checked arithmetic
+                int bytesPerChannel = blockAlignment / channels;
+                int samplesPerBlock = checked(((bytesPerChannel - 7) * 2) + 2);
+                
+                // Calculate total samples more safely
+                int fullBlocks = count / blockAlignment;
+                int remainingBytes = count % blockAlignment;
+                int samplesInLastBlock = 0;
+                
+                if (remainingBytes > 0)
                 {
-                    blockPredictor = buffer[offset];
-                    ++offset;
-                    if (blockPredictor > 6)
-                        blockPredictor = 6;
-                    channel1.coeff1 = adaptationCoeff1[blockPredictor];
-                    channel1.coeff2 = adaptationCoeff2[blockPredictor];
-                }
-
-                channel0.delta = buffer[offset];
-                channel0.delta |= buffer[offset + 1] << 8;
-                if ((channel0.delta & 0x8000) != 0)
-                    channel0.delta -= 0x10000;
-                offset += 2;
-                if (stereo)
-                {
-                    channel1.delta = buffer[offset];
-                    channel1.delta |= buffer[offset + 1] << 8;
-                    if ((channel1.delta & 0x8000) != 0)
-                        channel1.delta -= 0x10000;
-                    offset += 2;
-                }
-
-                channel0.sample1 = buffer[offset];
-                channel0.sample1 |= buffer[offset + 1] << 8;
-                if ((channel0.sample1 & 0x8000) != 0)
-                    channel0.sample1 -= 0x10000;
-                offset += 2;
-                if (stereo)
-                {
-                    channel1.sample1 = buffer[offset];
-                    channel1.sample1 |= buffer[offset + 1] << 8;
-                    if ((channel1.sample1 & 0x8000) != 0)
-                        channel1.sample1 -= 0x10000;
-                    offset += 2;
-                }
-
-                channel0.sample2 = buffer[offset];
-                channel0.sample2 |= buffer[offset + 1] << 8;
-                if ((channel0.sample2 & 0x8000) != 0)
-                    channel0.sample2 -= 0x10000;
-                offset += 2;
-                if (stereo)
-                {
-                    channel1.sample2 = buffer[offset];
-                    channel1.sample2 |= buffer[offset + 1] << 8;
-                    if ((channel1.sample2 & 0x8000) != 0)
-                        channel1.sample2 -= 0x10000;
-                    offset += 2;
-                }
-
-                if (stereo)
-                {
-                    samples[sampleOffset] = (byte)channel0.sample2;
-                    samples[sampleOffset + 1] = (byte)(channel0.sample2 >> 8);
-                    samples[sampleOffset + 2] = (byte)channel1.sample2;
-                    samples[sampleOffset + 3] = (byte)(channel1.sample2 >> 8);
-                    samples[sampleOffset + 4] = (byte)channel0.sample1;
-                    samples[sampleOffset + 5] = (byte)(channel0.sample1 >> 8);
-                    samples[sampleOffset + 6] = (byte)channel1.sample1;
-                    samples[sampleOffset + 7] = (byte)(channel1.sample1 >> 8);
-                    sampleOffset += 8;
-                }
-                else
-                {
-                    samples[sampleOffset] = (byte)channel0.sample2;
-                    samples[sampleOffset + 1] = (byte)(channel0.sample2 >> 8);
-                    samples[sampleOffset + 2] = (byte)channel0.sample1;
-                    samples[sampleOffset + 3] = (byte)(channel0.sample1 >> 8);
-                    sampleOffset += 4;
-                }
-
-                blockSize -= (offset - offsetStart);
-                if (stereo)
-                {
-                    for (int i = 0; i < blockSize; ++i)
+                    int lastBlockBytesPerChannel = remainingBytes / channels;
+                    if (lastBlockBytesPerChannel > 7) // Ensure we have enough bytes for a valid block
                     {
-                        int nibbles = buffer[offset];
-
-                        int sample = AdpcmMsExpandNibble(ref channel0, nibbles >> 4);
-                        samples[sampleOffset] = (byte)sample;
-                        samples[sampleOffset + 1] = (byte)(sample >> 8);
-
-                        sample = AdpcmMsExpandNibble(ref channel1, nibbles & 0x0f);
-                        samples[sampleOffset + 2] = (byte)sample;
-                        samples[sampleOffset + 3] = (byte)(sample >> 8);
-
-                        sampleOffset += 4;
-                        ++offset;
+                        samplesInLastBlock = ((lastBlockBytesPerChannel - 7) * 2) + 2;
                     }
                 }
-                else
+                
+                // Calculate total samples with overflow checking
+                long totalSamplesLong = checked((long)fullBlocks * samplesPerBlock + samplesInLastBlock);
+                if (totalSamplesLong > int.MaxValue)
                 {
-                    for (int i = 0; i < blockSize; ++i)
+                    throw new OverflowException("Sample count too large");
+                }
+                int totalSamples = (int)totalSamplesLong;
+                
+                // Allocate output buffer with overflow checking
+                long bufferSize = checked((long)totalSamples * sizeof(short) * channels);
+                if (bufferSize > int.MaxValue)
+                {
+                    throw new OverflowException("Buffer size too large");
+                }
+                var samples = new byte[(int)bufferSize];
+                int sampleOffset = 0;
+
+                bool stereo = channels == 2;
+
+                while (count > 0)
+                {
+                    try 
                     {
-                        int nibbles = buffer[offset];
+                        int blockSize = Math.Min(blockAlignment, count);  // Use Math.Min to prevent overflow
+                        count -= blockSize;  // Reduce count by actual block size used
 
-                        int sample = AdpcmMsExpandNibble(ref channel0, nibbles >> 4);
-                        samples[sampleOffset] = (byte)sample;
-                        samples[sampleOffset + 1] = (byte)(sample >> 8);
+                        // Calculate samples in this block safely
+                        long samplesInBlock = ((long)(blockSize / channels) - 7) * 2 + 2;
+                        if (samplesInBlock < 2 || samplesInBlock > int.MaxValue)
+                            break;
 
-                        sample = AdpcmMsExpandNibble(ref channel0, nibbles & 0x0f);
-                        samples[sampleOffset + 2] = (byte)sample;
-                        samples[sampleOffset + 3] = (byte)(sample >> 8);
+                        int totalSamplesInBlock = (int)samplesInBlock;
 
-                        sampleOffset += 4;
+                        int offsetStart = offset;
+                        int blockPredictor = buffer[offset];
                         ++offset;
+                        if (blockPredictor > 6)
+                            blockPredictor = 6;
+                        channel0.coeff1 = adaptationCoeff1[blockPredictor];
+                        channel0.coeff2 = adaptationCoeff2[blockPredictor];
+                        if (stereo)
+                        {
+                            blockPredictor = buffer[offset];
+                            ++offset;
+                            if (blockPredictor > 6)
+                                blockPredictor = 6;
+                            channel1.coeff1 = adaptationCoeff1[blockPredictor];
+                            channel1.coeff2 = adaptationCoeff2[blockPredictor];
+                        }
+
+                        channel0.delta = buffer[offset];
+                        channel0.delta |= buffer[offset + 1] << 8;
+                        if ((channel0.delta & 0x8000) != 0)
+                            channel0.delta -= 0x10000;
+                        offset += 2;
+                        if (stereo)
+                        {
+                            channel1.delta = buffer[offset];
+                            channel1.delta |= buffer[offset + 1] << 8;
+                            if ((channel1.delta & 0x8000) != 0)
+                                channel1.delta -= 0x10000;
+                            offset += 2;
+                        }
+
+                        channel0.sample1 = buffer[offset];
+                        channel0.sample1 |= buffer[offset + 1] << 8;
+                        if ((channel0.sample1 & 0x8000) != 0)
+                            channel0.sample1 -= 0x10000;
+                        offset += 2;
+                        if (stereo)
+                        {
+                            channel1.sample1 = buffer[offset];
+                            channel1.sample1 |= buffer[offset + 1] << 8;
+                            if ((channel1.sample1 & 0x8000) != 0)
+                                channel1.sample1 -= 0x10000;
+                            offset += 2;
+                        }
+
+                        channel0.sample2 = buffer[offset];
+                        channel0.sample2 |= buffer[offset + 1] << 8;
+                        if ((channel0.sample2 & 0x8000) != 0)
+                            channel0.sample2 -= 0x10000;
+                        offset += 2;
+                        if (stereo)
+                        {
+                            channel1.sample2 = buffer[offset];
+                            channel1.sample2 |= buffer[offset + 1] << 8;
+                            if ((channel1.sample2 & 0x8000) != 0)
+                                channel1.sample2 -= 0x10000;
+                            offset += 2;
+                        }
+
+                        if (stereo)
+                        {
+                            samples[sampleOffset] = (byte)channel0.sample2;
+                            samples[sampleOffset + 1] = (byte)(channel0.sample2 >> 8);
+                            samples[sampleOffset + 2] = (byte)channel1.sample2;
+                            samples[sampleOffset + 3] = (byte)(channel1.sample2 >> 8);
+                            samples[sampleOffset + 4] = (byte)channel0.sample1;
+                            samples[sampleOffset + 5] = (byte)(channel0.sample1 >> 8);
+                            samples[sampleOffset + 6] = (byte)channel1.sample1;
+                            samples[sampleOffset + 7] = (byte)(channel1.sample1 >> 8);
+                            sampleOffset += 8;
+                        }
+                        else
+                        {
+                            samples[sampleOffset] = (byte)channel0.sample2;
+                            samples[sampleOffset + 1] = (byte)(channel0.sample2 >> 8);
+                            samples[sampleOffset + 2] = (byte)channel0.sample1;
+                            samples[sampleOffset + 3] = (byte)(channel0.sample1 >> 8);
+                            sampleOffset += 4;
+                        }
+
+                        blockSize -= (offset - offsetStart);
+                        if (stereo)
+                        {
+                            for (int i = 0; i < blockSize; ++i)
+                            {
+                                int nibbles = buffer[offset];
+
+                                int sample = AdpcmMsExpandNibble(ref channel0, nibbles >> 4);
+                                samples[sampleOffset] = (byte)sample;
+                                samples[sampleOffset + 1] = (byte)(sample >> 8);
+
+                                sample = AdpcmMsExpandNibble(ref channel1, nibbles & 0x0f);
+                                samples[sampleOffset + 2] = (byte)sample;
+                                samples[sampleOffset + 3] = (byte)(sample >> 8);
+
+                                sampleOffset += 4;
+                                ++offset;
+                            }
+                        }
+                        else
+                        {
+                            for (int i = 0; i < blockSize; ++i)
+                            {
+                                int nibbles = buffer[offset];
+
+                                int sample = AdpcmMsExpandNibble(ref channel0, nibbles >> 4);
+                                samples[sampleOffset] = (byte)sample;
+                                samples[sampleOffset + 1] = (byte)(sample >> 8);
+
+                                sample = AdpcmMsExpandNibble(ref channel0, nibbles & 0x0f);
+                                samples[sampleOffset + 2] = (byte)sample;
+                                samples[sampleOffset + 3] = (byte)(sample >> 8);
+
+                                sampleOffset += 4;
+                                ++offset;
+                            }
+                        }
+                    }
+                    catch (OverflowException)
+                    {
+                        throw;
                     }
                 }
+
+                return samples;
             }
-
-            return samples;
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in ConvertMsAdpcmToPcm: {ex.Message}");
+                Console.WriteLine($"Parameters: buffer.Length={buffer.Length}, offset={offset}, count={count}, channels={channels}, blockAlignment={blockAlignment}");
+                throw;
+            }
         }
 
         // Convert 8-bit PCM to 16-bit PCM
