@@ -122,6 +122,7 @@ namespace LodeRaider
                     var spriteData = spriteExtractor.LoadPak(asset);
                     if (spriteData.ImageData != null)
                     {
+                        spriteExtractor.SaveSprite(spriteData, asset.name);
                         Console.WriteLine($"Extracted sprite: {asset.name} ({spriteData.Width}x{spriteData.Height}, {spriteData.Frames?.Length ?? 0} frames)");
                     }
                     break;
