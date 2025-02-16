@@ -34,20 +34,11 @@ namespace LodeRaider
         {
             palette = new Color[256];
             
-            // XNA/FNA uses premultiplied alpha
+            // Initialize with grayscale palette
             for (int i = 0; i < 256; i++)
             {
-                // Convert 8-bit index to RGB components
-                int r = ((i >> 5) & 0x07) * 32;  // 3 bits for red (0-7) scaled to 0-255
-                int g = ((i >> 2) & 0x07) * 32;  // 3 bits for green (0-7) scaled to 0-255
-                int b = (i & 0x03) * 64;         // 2 bits for blue (0-3) scaled to 0-255
-                
-                // Apply gamma correction (XNA uses sRGB)
-                r = (int)(Math.Pow(r / 255.0, 2.2) * 255);
-                g = (int)(Math.Pow(g / 255.0, 2.2) * 255);
-                b = (int)(Math.Pow(b / 255.0, 2.2) * 255);
-                
-                palette[i] = Color.FromArgb(255, r, g, b);
+                byte intensity = (byte)(i & 0xFF);
+                palette[i] = Color.FromArgb(255, intensity, intensity, intensity);
             }
             
             // Set special colors
@@ -68,32 +59,36 @@ namespace LodeRaider
                     uint magic = reader.ReadUInt32();
                     Console.WriteLine($"CLU Magic: 0x{magic:X8}");
                     
-                    // Read palette size
-                    short paletteSize = reader.ReadInt16();
-                    Console.WriteLine($"Palette size: {paletteSize}");
-                    
-                    // Skip additional header bytes if needed
-                    reader.BaseStream.Seek(2, SeekOrigin.Current); // Skip 2 bytes
+                    // Read dimensions
+                    short width = reader.ReadInt16();
+                    short height = (short)(reader.ReadInt16() + 1); // Add 1 to match game format
+                    Console.WriteLine($"CLU dimensions: {width}x{height}");
                     
                     // Read palette data - 256 colors
                     palette = new Color[256];
                     
                     for (int i = 0; i < 256; i++)
                     {
-                        // Each color is stored as 3 bytes (RGB)
-                        byte r = (byte)(reader.ReadByte() * 4); // Scale from 6-bit to 8-bit
-                        byte g = (byte)(reader.ReadByte() * 4);
-                        byte b = (byte)(reader.ReadByte() * 4);
-                        byte a = 255;
+                        // Skip 2 bytes (unused)
+                        reader.ReadUInt16();
                         
-                        palette[i] = Color.FromArgb(a, r, g, b);
+                        // Each color component is a 16-bit value shifted right by 8
+                        byte r = (byte)(reader.ReadUInt16() >> 8);
+                        byte g = (byte)(reader.ReadUInt16() >> 8);
+                        byte b = (byte)(reader.ReadUInt16() >> 8);
+                        
+                        // Store colors
+                        palette[i] = Color.FromArgb(255, r, g, b);
                         
                         // Debug output for first few colors
                         if (i < 16)
                         {
-                            Console.WriteLine($"Color {i}: R={r} G={g} B={b} A={a}");
+                            Console.WriteLine($"Color {i}: R={r} G={g} B={b} A=255");
                         }
                     }
+                    
+                    // Ensure color 0 is transparent
+                    palette[0] = Color.FromArgb(0, 0, 0, 0);
                     
                     hasPalette = true;
                     Console.WriteLine("Loaded palette from CLU file");
@@ -810,68 +805,113 @@ namespace LodeRaider
         private byte[] DecompressRLE(byte[] data)
         {
             var output = new List<byte>();
-            int i = 0;
+            int currentX = 0;
+            int currentY = 0;
+            int backupX = 0;
+            int lineOffset = 0;
             
+            // Loop stack for nested loops (max 13 levels)
+            var loopStack = new (int count, long position)[13];
+            int loopStackPtr = -1;
+
             try
             {
-                while (i < data.Length - 1) // Need at least 2 bytes to compare
+                using (var ms = new MemoryStream(data))
+                using (var reader = new BinaryReader(ms))
                 {
-                    if (data[i] == data[i + 1])
+                    while (ms.Position < ms.Length)
                     {
-                        // RLE block - repeated bytes
-                        byte value = data[i];
-                        byte count = 1;
-                        i++;
+                        byte cmd = reader.ReadByte();
                         
-                        while (i < data.Length - 1 && count < 254)
+                        // Check for line flag
+                        if ((cmd & 0x80) != 0)
                         {
-                            if (data[i] != value)
-                                break;
-                            count++;
-                            i++;
+                            lineOffset += 640; // Line width
+                            currentY++;
+                            currentX = backupX;
                         }
-                        
-                        // Output count and value
-                        output.Add(count);
-                        output.Add(value);
-                    }
-                    else
-                    {
-                        // Literal block - non-repeated bytes
-                        output.Add(0xFF); // Marker for literal block
-                        int countPos = output.Count;
-                        output.Add(0); // Placeholder for count
-                        byte count = 0;
-                        
-                        while (i < data.Length - 1 && count < 254)
+
+                        // Get count from command byte
+                        short count = (short)(cmd & 0x1F);
+                        if (count == 0)
                         {
-                            if (data[i] == data[i + 1])
-                                break;
-                            output.Add(data[i]);
-                            count++;
-                            i++;
+                            // Extended 16-bit count
+                            count = (short)((reader.ReadByte() << 8) | reader.ReadByte());
                         }
+
+                        // Get command type
+                        int cmdType = cmd & 0x60;
                         
-                        // Update count
-                        output[countPos] = count;
+                        if (cmdType == 0x60) // Pattern fill
+                        {
+                            while (count > 0)
+                            {
+                                output.Add(reader.ReadByte());
+                                currentX++;
+                                count--;
+                            }
+                        }
+                        else if (cmdType == 0x40) // Repeat fill
+                        {
+                            if (count == 1)
+                            {
+                                break; // End of data
+                            }
+                            byte value = reader.ReadByte();
+                            while (count > 0)
+                            {
+                                output.Add(value);
+                                currentX++;
+                                count--;
+                            }
+                        }
+                        else if (cmdType == 0x20) // Skip pixels
+                        {
+                            while (count > 0)
+                            {
+                                output.Add(0); // Transparent pixel
+                                currentX++;
+                                count--;
+                            }
+                        }
+                        else // Loop control
+                        {
+                            if (count > 1)
+                            {
+                                // Start loop
+                                if (++loopStackPtr >= 12)
+                                {
+                                    break;
+                                }
+                                loopStack[loopStackPtr] = (count, ms.Position);
+                            }
+                            else
+                            {
+                                // End loop
+                                if (loopStackPtr < 0)
+                                {
+                                    break;
+                                }
+                                
+                                loopStack[loopStackPtr].count--;
+                                if (loopStack[loopStackPtr].count <= 0)
+                                {
+                                    loopStackPtr--;
+                                }
+                                else
+                                {
+                                    ms.Position = loopStack[loopStackPtr].position;
+                                }
+                            }
+                        }
                     }
                 }
-                
-                // Handle last byte if needed
-                if (i < data.Length)
-                {
-                    output.Add(1); // Count of 1
-                    output.Add(data[i]); // Last byte
-                }
-                
-                // Add terminator
-                output.Add(0);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Warning: Error during decompression at offset {i}: {ex.Message}");
+                Console.WriteLine($"Warning: Error during decompression: {ex.Message}");
             }
-            
+
             return output.ToArray();
         }
 
