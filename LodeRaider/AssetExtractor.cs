@@ -58,23 +58,32 @@ namespace LodeRaider
                     return;
                 }
 
-                ProcessAssets(binaryReader, prsPath);
+                // First pass: Process only CLU files to ensure palettes are loaded
+                ProcessAssets(binaryReader, prsPath, true);
+                
+                // Reset position for second pass
+                binaryReader.BaseStream.Position = 2 + 256;
+                
+                // Second pass: Process all other assets
+                ProcessAssets(binaryReader, prsPath, false);
             }
         }
 
-        private void ProcessAssets(BinaryReader binaryReader, string prsPath)
+        private void ProcessAssets(BinaryReader binaryReader, string prsPath, bool cluOnly)
         {
             binaryReader.ReadBytes(12); // 03PRD skip
             short assetCount = binaryReader.ReadInt16(); // 04PRD number of assets
+            long startPos = binaryReader.BaseStream.Position;
 
             for (int i = 0; i < assetCount; i++)
             {
-                ProcessSingleAsset(binaryReader, prsPath);
+                ProcessSingleAsset(binaryReader, prsPath, cluOnly);
             }
         }
 
-        private void ProcessSingleAsset(BinaryReader binaryReader, string prsPath)
+        private void ProcessSingleAsset(BinaryReader binaryReader, string prsPath, bool cluOnly)
         {
+            long assetStartPos = binaryReader.BaseStream.Position;
             binaryReader.ReadBytes(10); // 01AST skip
             Asset asset = new Asset
             {
@@ -87,6 +96,12 @@ namespace LodeRaider
             };
 
             if (asset.length == 0 || asset.offset == 0) return;
+
+            // In CLU-only pass, only process CLU files
+            if (cluOnly && asset.assetType != "CLU") return;
+            
+            // In non-CLU pass, skip CLU files as they've already been processed
+            if (!cluOnly && asset.assetType == "CLU") return;
 
             LogAssetInfo(asset);
             ExtractAsset(asset);
@@ -103,13 +118,13 @@ namespace LodeRaider
             switch (asset.assetType)
             {
                 case "SND":
-                    audioExtractor.ExtractSound(asset);
-                    Console.WriteLine("Extracted sound: " + asset.name);
+                    //audioExtractor.ExtractSound(asset);
+                    //Console.WriteLine("Extracted sound: " + asset.name);
                     break;
 
                 case "PCM":
-                    audioExtractor.ExtractPCM(asset);
-                    Console.WriteLine("Extracted pcm: " + asset.name);
+                    //audioExtractor.ExtractPCM(asset);
+                    //Console.WriteLine("Extracted pcm: " + asset.name);
                     break;
 
                 case "CLU":

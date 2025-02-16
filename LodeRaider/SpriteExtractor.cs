@@ -34,16 +34,20 @@ namespace LodeRaider
         {
             palette = new Color[256];
             
-            // Initialize with grayscale palette
+            // Initialize with a more game-appropriate grayscale palette
             for (int i = 0; i < 256; i++)
             {
                 byte intensity = (byte)(i & 0xFF);
-                palette[i] = Color.FromArgb(255, intensity, intensity, intensity);
+                // Add a slight warmth to the grayscale to match the game's aesthetic
+                byte r = intensity;
+                byte g = (byte)(intensity * 0.95); // Slightly reduce green
+                byte b = (byte)(intensity * 0.9);  // Slightly reduce blue
+                palette[i] = Color.FromArgb(255, r, g, b);
             }
             
             // Set special colors
-            palette[0] = Color.FromArgb(0, 0, 0, 0);      // Transparent black
-            palette[1] = Color.FromArgb(255, 0, 0, 0);    // Solid black
+            palette[0] = Color.FromArgb(0, 0, 0, 0);      // Transparent
+            palette[1] = Color.FromArgb(255, 32, 32, 32);  // Dark gray
             palette[255] = Color.FromArgb(255, 255, 255, 255); // White
         }
 
@@ -61,7 +65,8 @@ namespace LodeRaider
                     
                     // Read dimensions
                     short width = reader.ReadInt16();
-                    short height = (short)(reader.ReadInt16() + 1); // Add 1 to match game format
+                    short height = reader.ReadInt16();
+                    height++; // Add 1 to match game format
                     Console.WriteLine($"CLU dimensions: {width}x{height}");
                     
                     // Read palette data - 256 colors
@@ -69,26 +74,35 @@ namespace LodeRaider
                     
                     for (int i = 0; i < 256; i++)
                     {
-                        // Skip 2 bytes (unused)
+                        // Skip unused bytes (2 bytes per color)
                         reader.ReadUInt16();
                         
-                        // Each color component is a 16-bit value shifted right by 8
-                        byte r = (byte)(reader.ReadUInt16() >> 8);
-                        byte g = (byte)(reader.ReadUInt16() >> 8);
-                        byte b = (byte)(reader.ReadUInt16() >> 8);
+                        // Read RGB components as 16-bit values
+                        ushort r = reader.ReadUInt16();
+                        ushort g = reader.ReadUInt16();
+                        ushort b = reader.ReadUInt16();
                         
-                        // Store colors
-                        palette[i] = Color.FromArgb(255, r, g, b);
+                        // Convert to 8-bit color components by taking the high byte
+                        byte r8 = (byte)(r >> 8);
+                        byte g8 = (byte)(g >> 8);
+                        byte b8 = (byte)(b >> 8);
+                        
+                        // Store color with full opacity (except for index 0)
+                        if (i == 0)
+                        {
+                            palette[i] = Color.FromArgb(0, 0, 0, 0); // Transparent
+                        }
+                        else
+                        {
+                            palette[i] = Color.FromArgb(255, r8, g8, b8);
+                        }
                         
                         // Debug output for first few colors
                         if (i < 16)
                         {
-                            Console.WriteLine($"Color {i}: R={r} G={g} B={b} A=255");
+                            Console.WriteLine($"Color {i}: R={r8} G={g8} B={b8} A={palette[i].A} (from R16=0x{r:X4} G16=0x{g:X4} B16=0x{b:X4})");
                         }
                     }
-                    
-                    // Ensure color 0 is transparent
-                    palette[0] = Color.FromArgb(0, 0, 0, 0);
                     
                     hasPalette = true;
                     Console.WriteLine("Loaded palette from CLU file");
@@ -98,7 +112,6 @@ namespace LodeRaider
             {
                 Console.WriteLine($"Error loading palette: {ex.Message}");
                 Console.WriteLine(ex.StackTrace);
-                // Fall back to default palette
                 InitializeDefaultPalette();
             }
         }
@@ -238,6 +251,27 @@ namespace LodeRaider
                         byte skippedByte = binaryReader.ReadByte();
                         Console.WriteLine($"Skipped byte value: 0x{skippedByte:X2}");
                         
+                        // Check if this is a wallpaper file (has repeating pattern starting with 0xA1 or 0xA2)
+                        if (skippedByte == 0xA2 || skippedByte == 0xA1)
+                        {
+                            Console.WriteLine("Detected wallpaper format");
+                            
+                            // Wallpapers are typically 640x480
+                            commandSprite.Width = 640;
+                            commandSprite.Height = 480;
+                            
+                            // Read the compressed data
+                            int dataStart = (int)binaryReader.BaseStream.Position - 2; // Include format and pattern bytes
+                            int dataLength = asset.length - (dataStart - asset.offset);
+                            byte[] compressedData = binaryReader.ReadBytes(dataLength);
+                            
+                            // Decompress using wallpaper-specific RLE
+                            commandSprite.ImageData = DecompressWallpaperRLE(compressedData);
+                            
+                            return commandSprite;
+                        }
+                        
+                        // If not wallpaper, continue with normal format 0x00 handling
                         // If skipped byte is 0, try to read as a single sprite
                         if (skippedByte == 0x00)
                         {
@@ -713,6 +747,7 @@ namespace LodeRaider
                                 // Skip this entry and try to find next valid sprite
                                 binaryReader.BaseStream.Position = entryStart + 1;
                             }
+
                         }
                         
                         if (validSprites.Count == 0)
@@ -918,38 +953,45 @@ namespace LodeRaider
         private byte[] DecompressWallpaperRLE(byte[] data)
         {
             var output = new List<byte>();
-            int i = 0;
+            int currentX = 0;
+            int currentY = 0;
+            int lineOffset = 0;
             
             try
             {
-                while (i < data.Length)
+                using (var ms = new MemoryStream(data))
+                using (var reader = new BinaryReader(ms))
                 {
-                    // Check for RLE marker (0x00)
-                    if (data[i] == 0x00 && i + 2 < data.Length)
+                    while (ms.Position < ms.Length)
                     {
-                        // Next byte is count, followed by value
-                        byte count = data[i + 1];
-                        byte value = data[i + 2];
+                        byte cmd = reader.ReadByte();
                         
-                        // Output repeated value
-                        for (int j = 0; j < count; j++)
+                        // Check for line flag (0xA1 or 0xA2 indicates new line)
+                        if (cmd == 0xA1 || cmd == 0xA2)
                         {
-                            output.Add(value);
+                            // Skip the next two bytes (line position)
+                            reader.ReadInt16();
+                            currentY++;
+                            currentX = 0;
+                            continue;
                         }
                         
-                        i += 3;
-                    }
-                    else
-                    {
-                        // Literal byte
-                        output.Add(data[i]);
-                        i++;
+                        // Get count and color
+                        byte count = cmd;
+                        byte color = reader.ReadByte();
+                        
+                        // Output repeated color
+                        for (int i = 0; i < count; i++)
+                        {
+                            output.Add(color);
+                            currentX++;
+                        }
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Warning: Error during wallpaper decompression at offset {i}: {ex.Message}");
+                Console.WriteLine($"Warning: Error during wallpaper decompression: {ex.Message}");
             }
             
             // Ensure we have enough data for 640x480
@@ -1058,10 +1100,11 @@ namespace LodeRaider
                                 else
                                 {
                                     Color color = palette[colorIndex];
+                                    // Apply color exactly as stored in palette
                                     imageData[destIndex + 0] = color.B;
                                     imageData[destIndex + 1] = color.G;
                                     imageData[destIndex + 2] = color.R;
-                                    imageData[destIndex + 3] = 255; // Fully opaque
+                                    imageData[destIndex + 3] = color.A;
                                 }
                             }
                         }
