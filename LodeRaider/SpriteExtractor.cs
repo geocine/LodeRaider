@@ -108,6 +108,12 @@ namespace LodeRaider
             }
         }
 
+        private bool IsFontSprite(string name)
+        {
+            return name.Contains("FONT", StringComparison.OrdinalIgnoreCase) ||
+                   name.StartsWith("ARIAL", StringComparison.OrdinalIgnoreCase);
+        }
+
         public SpriteData LoadPak(Asset asset)
         {
             try 
@@ -124,98 +130,99 @@ namespace LodeRaider
                     // Check if this is a PNG file (font texture)
                     if (headerBytes[0] == 0x89 && headerBytes[1] == 0x50 && headerBytes[2] == 0x4E && headerBytes[3] == 0x47)
                     {
-                        Console.WriteLine("Detected PNG file (likely a font texture)");
+                        Console.WriteLine("Detected PNG file");
                         // Reset position to start of PNG
                         binaryReader.BaseStream.Seek(asset.offset, SeekOrigin.Begin);
                         
-                        // Load PNG directly as a Bitmap
-                        using (var ms = new MemoryStream())
+                        // Read the entire PNG data
+                        byte[] pngData = new byte[asset.length];
+                        binaryReader.Read(pngData, 0, asset.length);
+                        
+                        using (var ms = new MemoryStream(pngData))
+                        using (var bitmap = new Bitmap(ms))
                         {
-                            byte[] buffer = new byte[4096];
-                            int read;
-                            while ((read = binaryReader.Read(buffer, 0, buffer.Length)) > 0)
-                            {
-                                ms.Write(buffer, 0, read);
-                            }
-                            ms.Position = 0;
+                            var pngSpriteData = new SpriteData();
+                            pngSpriteData.Width = bitmap.Width;
+                            pngSpriteData.Height = bitmap.Height;
                             
-                            using (var bitmap = new Bitmap(ms))
+                            // Convert bitmap to raw pixel data
+                            var rect = new Rectangle(0, 0, bitmap.Width, bitmap.Height);
+                            var bitmapData = bitmap.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+                            
+                            try
                             {
-                                var pngSpriteData = new SpriteData();
-                                pngSpriteData.Width = bitmap.Width;
-                                pngSpriteData.Height = bitmap.Height;
+                                int bytes = Math.Abs(bitmapData.Stride) * bitmap.Height;
+                                pngSpriteData.ImageData = new byte[bitmap.Width * bitmap.Height];
                                 
-                                // Convert bitmap to raw pixel data
-                                var rect = new Rectangle(0, 0, bitmap.Width, bitmap.Height);
-                                var bitmapData = bitmap.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+                                // Convert ARGB to indexed color
+                                byte[] tempData = new byte[bytes];
+                                Marshal.Copy(bitmapData.Scan0, tempData, 0, bytes);
                                 
-                                try
+                                // Determine if this is a font texture based on name
+                                bool isFontTexture = IsFontSprite(asset.name);
+                                
+                                for (int y = 0; y < bitmap.Height; y++)
                                 {
-                                    int bytes = Math.Abs(bitmapData.Stride) * bitmap.Height;
-                                    pngSpriteData.ImageData = new byte[bitmap.Width * bitmap.Height];
-                                    
-                                    // Convert ARGB to indexed color
-                                    byte[] tempData = new byte[bytes];
-                                    Marshal.Copy(bitmapData.Scan0, tempData, 0, bytes);
-                                    
-                                    for (int y = 0; y < bitmap.Height; y++)
+                                    for (int x = 0; x < bitmap.Width; x++)
                                     {
-                                        for (int x = 0; x < bitmap.Width; x++)
+                                        int pixelIndex = y * bitmap.Width + x;
+                                        int sourceIndex = y * Math.Abs(bitmapData.Stride) + x * 4;
+                                        
+                                        byte r = tempData[sourceIndex + 2];
+                                        byte g = tempData[sourceIndex + 1];
+                                        byte b = tempData[sourceIndex + 0];
+                                        byte a = tempData[sourceIndex + 3];
+                                        
+                                        if (isFontTexture)
                                         {
-                                            int pixelIndex = y * bitmap.Width + x;
-                                            int sourceIndex = y * Math.Abs(bitmapData.Stride) + x * 4;
-                                            
-                                            // Convert to grayscale and use as index
-                                            byte r = tempData[sourceIndex + 2];
-                                            byte g = tempData[sourceIndex + 1];
-                                            byte b = tempData[sourceIndex + 0];
-                                            byte a = tempData[sourceIndex + 3];
-                                            
-                                            // If pixel is transparent, use index 0
+                                            // For font textures, convert to white on transparent
                                             if (a < 128)
                                             {
-                                                pngSpriteData.ImageData[pixelIndex] = 0;
+                                                pngSpriteData.ImageData[pixelIndex] = 0; // Transparent
                                             }
                                             else
                                             {
-                                                // Convert to grayscale index
-                                                byte gray = (byte)((r * 0.299 + g * 0.587 + b * 0.114) / 16);
-                                                pngSpriteData.ImageData[pixelIndex] = (byte)(gray + 1); // +1 to avoid index 0 (transparent)
+                                                pngSpriteData.ImageData[pixelIndex] = 255; // White
+                                            }
+                                        }
+                                        else
+                                        {
+                                            // For regular PNG files, try to match closest palette color
+                                            if (a < 128)
+                                            {
+                                                pngSpriteData.ImageData[pixelIndex] = 0; // Transparent
+                                            }
+                                            else
+                                            {
+                                                // Find closest palette color
+                                                int bestMatch = 1; // Start at 1 to avoid transparent
+                                                int minDiff = int.MaxValue;
+                                                
+                                                for (int i = 1; i < 256; i++)
+                                                {
+                                                    Color palColor = palette[i];
+                                                    int diff = Math.Abs(palColor.R - r) + 
+                                                              Math.Abs(palColor.G - g) + 
+                                                              Math.Abs(palColor.B - b);
+                                                    if (diff < minDiff)
+                                                    {
+                                                        minDiff = diff;
+                                                        bestMatch = i;
+                                                    }
+                                                }
+                                                pngSpriteData.ImageData[pixelIndex] = (byte)bestMatch;
                                             }
                                         }
                                     }
                                 }
-                                finally
-                                {
-                                    bitmap.UnlockBits(bitmapData);
-                                }
-                                
-                                return pngSpriteData;
                             }
+                            finally
+                            {
+                                bitmap.UnlockBits(bitmapData);
+                            }
+                            
+                            return pngSpriteData;
                         }
-                    }
-                    
-                    // Check if this is a wallpaper file (RLE pattern)
-                    if (headerBytes[0] == 0x00 && headerBytes[1] == 0xA2 && headerBytes[2] == 0x61)
-                    {
-                        Console.WriteLine("Detected wallpaper file (RLE compressed)");
-                        
-                        // Reset position to start
-                        binaryReader.BaseStream.Seek(asset.offset, SeekOrigin.Begin);
-                        
-                        // For wallpapers, we'll use a fixed size of 640x480 (game's base resolution)
-                        var wallpaperSpriteData = new SpriteData();
-                        wallpaperSpriteData.Width = 640;
-                        wallpaperSpriteData.Height = 480;
-                        
-                        // Read the compressed data
-                        byte[] compressedData = new byte[asset.length];
-                        int read = binaryReader.Read(compressedData, 0, asset.length);
-                        
-                        // Decompress the data
-                        wallpaperSpriteData.ImageData = DecompressWallpaperRLE(compressedData);
-                        
-                        return wallpaperSpriteData;
                     }
                     
                     // Reset position for normal PAK processing
@@ -228,8 +235,57 @@ namespace LodeRaider
                     Console.WriteLine($"Format ID: 0x{formatId:X2}");
                     Console.WriteLine($"Current file position after format ID: {binaryReader.BaseStream.Position}");
 
-                    // Check for special format IDs
-                    if (formatId == 0x8A || formatId == 0x89)
+                    if (formatId == 0x00)
+                    {
+                        Console.WriteLine("Processing format 0x00");
+                        
+                        // Skip next byte
+                        byte skippedByte = binaryReader.ReadByte();
+                        Console.WriteLine($"Skipped byte value: 0x{skippedByte:X2}");
+                        
+                        // If skipped byte is 0, try to read as a single sprite
+                        if (skippedByte == 0x00)
+                        {
+                            // Try to read width and height directly
+                            ushort width = binaryReader.ReadUInt16();
+                            ushort height = binaryReader.ReadUInt16();
+                            
+                            Console.WriteLine($"Direct dimensions: {width}x{height}");
+                            
+                            // Allow larger dimensions for menu screens and backgrounds
+                            if (width > 0 && width <= 1200 && height > 0 && height <= 1000)
+                            {
+                                commandSprite.Width = width;
+                                commandSprite.Height = height;
+                                
+                                // Read the rest as compressed data
+                                int dataStart = (int)binaryReader.BaseStream.Position;
+                                int dataLength = asset.length - (dataStart - asset.offset);
+                                byte[] compressedData = binaryReader.ReadBytes(dataLength);
+                                
+                                // Decompress the data
+                                commandSprite.ImageData = DecompressRLE(compressedData);
+                                
+                                // Verify and adjust size if needed
+                                int expectedSize = width * height;
+                                if (commandSprite.ImageData.Length != expectedSize)
+                                {
+                                    Console.WriteLine($"Adjusting decompressed size from {commandSprite.ImageData.Length} to {expectedSize}");
+                                    Array.Resize(ref commandSprite.ImageData, expectedSize);
+                                }
+                                
+                                return commandSprite;
+                            }
+                            else
+                            {
+                                Console.WriteLine($"Dimensions {width}x{height} out of valid range, trying multi-sprite format");
+                            }
+                        }
+                        
+                        // If direct read failed or skipped byte wasn't 0, try multi-sprite format
+                        // ... rest of the existing format 0x00 handling code ...
+                    }
+                    else if (formatId == 0x8A || formatId == 0x89)
                     {
                         // Format 0x8A is RLE compressed
                         // First 16 bytes contain format info
@@ -573,6 +629,123 @@ namespace LodeRaider
                         commandSprite.Height = totalHeight;
                         commandSprite.ImageData = combinedData;
                     }
+                    else if (formatId == 0x03)
+                    {
+                        Console.WriteLine("Processing format 0x03 (special multi-sprite format)");
+                        
+                        // Dump first 32 bytes to analyze structure
+                        long startPos = binaryReader.BaseStream.Position - 1;
+                        byte[] format03Header = new byte[32];
+                        binaryReader.BaseStream.Position = startPos;
+                        binaryReader.Read(format03Header, 0, 32);
+                        Console.WriteLine("Header bytes: " + BitConverter.ToString(format03Header));
+                        
+                        // Skip format ID byte
+                        binaryReader.BaseStream.Position = startPos + 1;
+                        
+                        // Read header
+                        byte skippedByte = binaryReader.ReadByte();
+                        ushort numSprites = binaryReader.ReadUInt16();
+                        ushort headerValue = binaryReader.ReadUInt16();
+                        
+                        Console.WriteLine($"Format 0x03 header: skip=0x{skippedByte:X2}, count={numSprites}, value=0x{headerValue:X4}");
+                        
+                        // Store sprite info for valid sprites
+                        var validSprites = new List<(int width, int height, byte[] data)>();
+                        int maxWidth = 0;
+                        int totalHeight = 0;
+                        
+                        // Read and analyze potential sprite entries
+                        for (int i = 0; i < numSprites && binaryReader.BaseStream.Position < asset.offset + asset.length; i++)
+                        {
+                            long entryStart = binaryReader.BaseStream.Position;
+                            
+                            // Try to read sprite header
+                            byte[] spriteHeader = new byte[16];
+                            binaryReader.Read(spriteHeader, 0, Math.Min(16, (int)(asset.offset + asset.length - binaryReader.BaseStream.Position)));
+                            Console.WriteLine($"Sprite {i} header: " + BitConverter.ToString(spriteHeader));
+                            
+                            // Reset position
+                            binaryReader.BaseStream.Position = entryStart;
+                            
+                            // Read potential dimensions
+                            ushort width = binaryReader.ReadUInt16();
+                            ushort height = binaryReader.ReadUInt16();
+                            
+                            // Check if these look like valid dimensions
+                            if (width > 0 && width <= 320 && height > 0 && height <= 200)
+                            {
+                                Console.WriteLine($"Found valid sprite {validSprites.Count}: {width}x{height} at offset {entryStart - asset.offset}");
+                                
+                                // Read compressed data until we find a terminator or invalid data
+                                var compressedData = new List<byte>();
+                                int maxBytes = width * height * 2; // Allow for some expansion
+                                int format00BytesRead = 0;
+                                
+                                while (format00BytesRead < maxBytes && binaryReader.BaseStream.Position < asset.offset + asset.length)
+                                {
+                                    byte b = binaryReader.ReadByte();
+                                    compressedData.Add(b);
+                                    format00BytesRead++;
+                                    
+                                    // Check for potential end of sprite data
+                                    if (format00BytesRead > 4 && 
+                                        (b == 0x00 || b == 0xFF) && 
+                                        compressedData[compressedData.Count - 2] == b)
+                                    {
+                                        break;
+                                    }
+                                }
+                                
+                                // Try to decompress the data
+                                byte[] decompressed = DecompressRLE(compressedData.ToArray());
+                                
+                                if (decompressed.Length > 0)
+                                {
+                                    // Resize if needed
+                                    if (decompressed.Length != width * height)
+                                    {
+                                        Array.Resize(ref decompressed, width * height);
+                                    }
+                                    
+                                    validSprites.Add((width, height, decompressed));
+                                    maxWidth = Math.Max(maxWidth, width);
+                                    totalHeight += height;
+                                }
+                            }
+                            else
+                            {
+                                // Skip this entry and try to find next valid sprite
+                                binaryReader.BaseStream.Position = entryStart + 1;
+                            }
+                        }
+                        
+                        if (validSprites.Count == 0)
+                        {
+                            throw new Exception("Could not find any valid sprites in format 0x03 file");
+                        }
+                        
+                        // Create combined sprite
+                        Console.WriteLine($"Combining {validSprites.Count} sprites into {maxWidth}x{totalHeight} image");
+                        commandSprite.Width = maxWidth;
+                        commandSprite.Height = totalHeight;
+                        commandSprite.ImageData = new byte[maxWidth * totalHeight];
+                        
+                        // Copy sprites into combined image
+                        int currentY = 0;
+                        foreach (var sprite in validSprites)
+                        {
+                            for (int y = 0; y < sprite.height; y++)
+                            {
+                                Array.Copy(sprite.data, y * sprite.width,
+                                         commandSprite.ImageData, (currentY + y) * maxWidth,
+                                         sprite.width);
+                            }
+                            currentY += sprite.height;
+                        }
+                        
+                        Console.WriteLine($"Final dimensions: {commandSprite.Width}x{commandSprite.Height}");
+                    }
                     else
                     {
                         // Uncompressed format:
@@ -770,6 +943,16 @@ namespace LodeRaider
                     int stride = bitmapData.Stride;
                     byte[] imageData = new byte[stride * sprite.Height];
                     
+                    // Use consistent font detection
+                    bool isFontSprite = IsFontSprite(name);
+            
+                    // Check if sprite uses limited color palette (like UI elements)
+                    bool isLimitedPalette = name.Contains("MENU", StringComparison.OrdinalIgnoreCase) ||
+                                          name.Contains("TEXT", StringComparison.OrdinalIgnoreCase) ||
+                                          (sprite.Width > 100 && sprite.ImageData.All(b => b <= 16)); // UI elements tend to be wider
+            
+                    Console.WriteLine($"Processing sprite {name}: Font={isFontSprite}, LimitedPalette={isLimitedPalette}");
+            
                     // Convert indexed color data to RGBA
                     for (int y = 0; y < sprite.Height; y++)
                     {
@@ -779,16 +962,68 @@ namespace LodeRaider
                             int destIndex = y * stride + x * 4;
                             
                             byte colorIndex = sprite.ImageData[sourceIndex];
-                            Color color = palette[colorIndex];
                             
-                            // For lava and similar effects, preserve the original color
-                            float alpha = colorIndex == 0 ? 0f : 1f;
-                            
-                            // Don't premultiply alpha for special effects
-                            imageData[destIndex + 0] = color.B;
-                            imageData[destIndex + 1] = color.G;
-                            imageData[destIndex + 2] = color.R;
-                            imageData[destIndex + 3] = (byte)(alpha * 255);
+                            if (isFontSprite)
+                            {
+                                // For font sprites, use pure white text on transparent background
+                                if (colorIndex == 0)
+                                {
+                                    // Transparent
+                                    imageData[destIndex + 0] = 0;   // B
+                                    imageData[destIndex + 1] = 0;   // G
+                                    imageData[destIndex + 2] = 0;   // R
+                                    imageData[destIndex + 3] = 0;   // A
+                                }
+                                else
+                                {
+                                    // White text
+                                    imageData[destIndex + 0] = 255; // B
+                                    imageData[destIndex + 1] = 255; // G
+                                    imageData[destIndex + 2] = 255; // R
+                                    imageData[destIndex + 3] = 255; // A
+                                }
+                            }
+                            else if (isLimitedPalette)
+                            {
+                                // For UI elements with limited palette
+                                if (colorIndex == 0)
+                                {
+                                    // Transparent
+                                    imageData[destIndex + 0] = 0;   // B
+                                    imageData[destIndex + 1] = 0;   // G
+                                    imageData[destIndex + 2] = 0;   // R
+                                    imageData[destIndex + 3] = 0;   // A
+                                }
+                                else
+                                {
+                                    // Use palette for UI colors
+                                    Color color = palette[colorIndex];
+                                    imageData[destIndex + 0] = color.B;
+                                    imageData[destIndex + 1] = color.G;
+                                    imageData[destIndex + 2] = color.R;
+                                    imageData[destIndex + 3] = 255; // Fully opaque
+                                }
+                            }
+                            else
+                            {
+                                // For game sprites (tiles, characters, items), use full palette
+                                if (colorIndex == 0)
+                                {
+                                    // Transparent
+                                    imageData[destIndex + 0] = 0;   // B
+                                    imageData[destIndex + 1] = 0;   // G
+                                    imageData[destIndex + 2] = 0;   // R
+                                    imageData[destIndex + 3] = 0;   // A
+                                }
+                                else
+                                {
+                                    Color color = palette[colorIndex];
+                                    imageData[destIndex + 0] = color.B;
+                                    imageData[destIndex + 1] = color.G;
+                                    imageData[destIndex + 2] = color.R;
+                                    imageData[destIndex + 3] = 255; // Fully opaque
+                                }
+                            }
                         }
                     }
                     
